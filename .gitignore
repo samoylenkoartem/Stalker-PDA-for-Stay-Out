@@ -1,0 +1,11 @@
+__pycache__/
+*.db
+*.png
+test.py
+stats.py
+settings.py
+radar_vision.py
+import sqlite3 as sq.py
+check_db.py
+radar.py
+hp_tracker.py
