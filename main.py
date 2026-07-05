@@ -7,6 +7,8 @@ from groq import Groq
 import pytesseract as pts
 from PIL import ImageGrab
 import platform
+import random
+from fuzzywuzzy import fuzz
 
 if platform.system() == "Windows":
     pts.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
@@ -19,6 +21,23 @@ client = Groq(api_key='GROQ_API_KEY')
 
 HP_CHANGE_THRESHOLD = 5
 KEYWORDS = ["Уро", "Ранил", "Убил", "Погиб", "Аномал"]
+
+FAKE_CHAT = [
+    "Игрок VasyaPuper нанёс вам Урон 25",
+    "Аномалия нанесла Урон 15",
+    "Игрок Killer88 Убил вас",
+    "Вы Погибли от радиации",
+    "Мутант Ранил вас на 30",
+    "Игрок StalkerPro нанёс Урон 45",
+    "Аномал притяжения нанесла урон 20",
+    "Игрок DarkZone Убил вас выстрелом в голову",
+    "Вы Погибли в зоне отчуждения",
+    "Снайпер Ранил вас на 60",
+]
+
+def emulate_chat():
+    lines = random.sample(FAKE_CHAT, k=random.randint(7, 10))
+    return '\n'.join(lines)
 
 def log_event(event_type, hp_value, location = None, damage_source = None):
     con = sq.connect("stayout.db")
@@ -128,8 +147,11 @@ def filter_chat(text):
     a=[]
     for word in KEYWORDS:
        for l in line:
-        if word in l:
+        part_ratio = fuzz.partial_ratio(word,l)
+        if part_ratio >= 60 and len(word) <= 5 or part_ratio >= 85 and len(word) > 5:
             a.append(l)
+    a = dict.fromkeys(a)
+    a = list(a)    
     return a
         
     
@@ -168,7 +190,7 @@ def generate_ai_report():
 
 # Инициализация БД
 con = sq.connect("stayout.db")
-con.execute("CREATE TABLE IF NOT EXISTS game_logs (timestamp TEXT, event_type TEXT, hp_value INTEGER)")
+con.execute("CREATE TABLE IF NOT EXISTS game_logs (timestamp TEXT, event_type TEXT, hp_value INTEGER, location TEXT, damage_source TEXT)")
 con.close()
 
 print("КПК Сталкера запущен...")
