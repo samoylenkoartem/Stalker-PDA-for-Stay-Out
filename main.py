@@ -12,12 +12,21 @@ from fuzzywuzzy import fuzz
 import tkinter as tk
 import threading
 import queue
+import os
+from dotenv import load_dotenv
 
 if platform.system() == "Windows":
     pts.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
-    
+
+load_dotenv()
+
+api_key = os.getenv("GROQ_API_KEY")
+
+if not api_key:
+    raise ValueError("GROQ_API_KEY is missing! Create a .env file with your key.")
+
 # Инициализация ИИ
-client = Groq(api_key='GROQ_API_KEY')
+client = Groq(api_key=api_key)
 
 q = queue.Queue()
 HP_CHANGE_THRESHOLD = 5
