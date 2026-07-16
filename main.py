@@ -268,6 +268,66 @@ button.pack()
 
 root.mainloop()
 
+class WindowNotFoundError(Exception):
+    pass
+
+class GameWindow:
+    def __init__(self, window_title="Stay Out"):
+        windows = gw.getWindowsWithTitle(window_title)
+        if not windows:
+            raise WindowNotFoundError(f'Окно {window_title} не найдено.')
+        windows.sort(reverse=True)
+        self._window = windows[0]
+
+        self._left = None
+        self._top = None
+        self._width = None
+        self._height = None
+        self._is_available = False
+        self.update_geometry()
+
+        def _update_geometry(self):
+            if self._window.isMinimized:
+                self._isavailable = False
+                return 
+            self._left = self._window.left
+            self._top = self._window.top
+            self._width = self._window.width
+            self._height = self._window.height
+
+            self._is_available = True
+            return
+
+
+
+
+        
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 # Инициализация БД
 con = sq.connect("stayout.db")
 con.execute("CREATE TABLE IF NOT EXISTS game_logs (timestamp TEXT, event_type TEXT, hp_value INTEGER, location TEXT, damage_source TEXT)")
