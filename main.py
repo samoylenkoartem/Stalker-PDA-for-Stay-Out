@@ -268,70 +268,71 @@ button.pack()
 
 root.mainloop()
 
-class WindowNotFoundError(Exception):
-    pass
+class Database:
+    def __init__(self, file="stayout.db"):
+        self._file = file
+        con = sq.connect(self._file)
+        con.execute("CREATE TABLE IF NOT EXISTS game_logs (timestamp TEXT, event_type TEXT, hp_value INTEGER, location TEXT, damage_source TEXT)")
+        con.close()
+    def log_event(self, event_type, hp_value, location = None, damage_source = None):
+        con = sq.connect(self._file)
+        cursor = con.cursor()
+        cursor.execute(
+            "INSERT INTO game_logs(timestamp, event_type, hp_value, location, damage_source) VALUES(?, ?, ?, ?, ?)",
+            (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), event_type, hp_value, location, damage_source)
+        )
+        con.commit()
+        con.close()
 
+    def db_worker(self):
+        while True:
+            item = q.get()
+            if item is None: 
+                break
+        
+            event_type, hp_value, location, damage_source = item
+            self.log_event(event_type, hp_value, location, damage_source)
+        
+            q.task_done()
 class GameWindow:
-    def __init__(self, window_title="Stay Out"):
-        windows = gw.getWindowsWithTitle(window_title)
-        if not windows:
-            raise WindowNotFoundError(f'Окно {window_title} не найдено.')
-        windows.sort(reverse=True)
-        self._window = windows[0]
-
+    def __init__(self):
         self._left = None
         self._top = None
         self._width = None
         self._height = None
-        self._is_available = False
-        self.update_geometry()
-
-        def _update_geometry(self):
-            if self._window.isMinimized:
-                self._isavailable = False
-                return 
-            self._left = self._window.left
-            self._top = self._window.top
-            self._width = self._window.width
-            self._height = self._window.height
-
-            self._is_available = True
+    def update(self, x_start=None, x_end=None, y_length=None, y_end=None):
+        try:
+            window = gw.getWindowsWithTitle("Stay Out")
+            if window:
+                windows = window[0]
+                if windows.isMinimized:
+                    time.sleep(1)
+                if x_start is None and x_end is None and y_length is None:
+                    self._left = windows.left
+                    self._top = windows.top
+                    self._width = windows.width
+                    self._height = windows.height
+                    return
+                X_START = windows.left + x_start
+                X_END = windows.left + x_end
+                Y_LENGTH = windows.top + y_length
+                if y_end is not None:
+                    Y_END = windows.top + y_end
+                    self._left = X_START
+                    self._top = X_END
+                    self._width = Y_LENGTH
+                    self._height = Y_END
+                else:
+                    self._left = X_START
+                    self._top = X_END
+                    self._width = Y_LENGTH
+        except IndexError:
+            print("Окно не найдено!")
             return
+        except Exception as e:
+            print(f'Ошибка: {e}')
 
-
-
-
-        
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-# Инициализация БД
-con = sq.connect("stayout.db")
-con.execute("CREATE TABLE IF NOT EXISTS game_logs (timestamp TEXT, event_type TEXT, hp_value INTEGER, location TEXT, damage_source TEXT)")
-con.close()
+db = Database()
 
 #Запуск скрипта
 print("КПК Сталкера запущен...")
@@ -360,7 +361,7 @@ def monitor_hp():
         if current_percent is not None:
             if abs(current_percent - prev_hp) >= HP_CHANGE_THRESHOLD:
                 event_type = "Ранение" if current_percent < prev_hp else "Лечение"
-                q.put(("hp_event", event_type, current_percent, None))
+                q.put((event_type, current_percent, None,  None))
                 prev_hp = current_percent
         time.sleep(get_polling_rate(current_percent or 100))
 
@@ -384,44 +385,13 @@ def monitor_chat():
             if filtered_lines:
                 chat_text = '\n'.join(filtered_lines)
                 if chat_text != last_chat_text:
-                    q.put(("chat_event", "Событие чата", get_current_hp() or 100, chat_text))
+                    q.put(("chat_event", get_current_hp() or 100,  None, chat_text))
                     last_chat_text = chat_text
         time.sleep(1.0)
 
-# Поток записи в базу данных
-def db_worker():
-    """
-    Поток-Потребитель (Consumer) для работы со SQLite:
-    - Единственный поток, который имеет прямой доступ к файлу базы данных.
-    - Запускается в бесконечном цикле и ждет данные через блокирующий вызов q.get().
-    - Если очередь пуста, поток автоматически засыпает (не нагружая процессор).
-    - Как только в очередь падает событие от monitor_hp или monitor_chat, он просыпается,
-      распаковывает кортеж, открывает соединение с SQLite, выполняет SQL-запрос 
-      INSERT INTO game_logs... и сохраняет изменения (commit).
-    - После этого вызывает q.task_done() и ждет следующее событие.
-    """
-    print("Поток БД Запущен и ждет задач...")
-    while True:
-        item = q.get()
-        if item is None: 
-            break
-        
-        event_source, event_type, hp_value, damage_source = item
-        
-        con = sq.connect("stayout.db")
-        cursor = con.cursor()
-        cursor.execute(
-            "INSERT INTO game_logs(timestamp, event_type, hp_value, location, damage_source) VALUES(?, ?, ?, ?, ?)",
-            (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), event_type, hp_value, None, damage_source)
-        )
-        con.commit()
-        con.close()
-        
-        q.task_done()
-
 thr_hp = threading.Thread(target=monitor_hp,daemon=True)   
 thr_chat = threading.Thread(target=monitor_chat, daemon=True)
-thr_db = threading.Thread(target=db_worker, daemon=True)
+thr_db = threading.Thread(target=db.db_worker, daemon=True)
 
 thr_hp.start()
 thr_chat.start()
