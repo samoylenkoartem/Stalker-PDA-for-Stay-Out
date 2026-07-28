@@ -7,7 +7,6 @@ from groq import Groq
 import pytesseract as pts
 from PIL import ImageGrab
 import platform
-import random
 from fuzzywuzzy import fuzz
 import tkinter as tk
 import threading
@@ -51,7 +50,7 @@ def get_window_info(x_start=None, x_end=None, y_length=None, y_end=None):
 - Если переданы смещения — возвращает абсолютные координаты на экране.
 """
     try:
-        window = gw.getWindowsWithTitle("Stay Out")
+        window = [w for w in gw.getAllWindows() if 'SO official' in w.title]
         if not window:
             print("Запусти игру")
             return None
@@ -91,16 +90,6 @@ def start_tracker():
     KEYWORDS = [elem.strip() for elem in KEYWORDS]
     root.destroy()
 
-# Функция симуляции чата
-def emulate_chat():
-    """ 
-    Поток-симулятор (используется для тестов без запущенной игры):
-    Генерирует случайные текстовые строки из тестового набора FAKE_CHAT и имитирует задержки реального игрового чата, чтобы проверить, 
-    как система обрабатывает и фильтрует входящий поток сообщений.
-    """
-    lines = random.sample(FAKE_CHAT, k=random.randint(7, 10))
-    return '\n'.join(lines)
-
 # Адаптивная частота опроса (Black Box)
 def get_polling_rate(hp):
     """
@@ -115,47 +104,66 @@ def get_polling_rate(hp):
 
 # Автопоиск полоски HP на экране
 def find_hp_bar():
-    """
-Автоматически находит полоску HP на экране путём сканирования пикселей.
-Ищет строку с более чем 50 красными пикселями подряд (r>150, g<80, b<80).
-Возвращает кортеж (x_start, x_end, y_line) — координаты полоски.
-"""
-    red_pixels = 0
-    left, top, width, height = get_window_info()
-    for y in range(top, top+height+1):
+# TODO: Позже переписать алгоритм на один проход (Streak Counter) и добавить convert("RGB")
+    """Автоматически находит полоску HP на экране путём сканирования пикселей.
+Ищет строку с более чем 10 красными пикселями подряд (r>135, g<80, b<80).
+Возвращает кортеж (x_start, x_end, y_line) — координаты полоски."""
+    try:
         red_pixels = 0
-        for x in range(left, left+width+1):
-            r, g, b = pyautogui.pixel(x,y)
-            if r > 150 and g < 80 and b < 80: red_pixels += 1
-            if red_pixels > 50:
-                y_line = y
-                x_start = None
-                x_end = None    
-                for x in range(left, left+width+1):
-                    r, g, b = pyautogui.pixel(x,y_line)
-                    if r > 150 and g < 80 and b < 80 and x_start is None:
-                        x_start = x
-                    if r > 150 and g < 80 and b < 80:
-                        x_end = x
-                return(x_start, x_end, y)
-    return None
+        info = get_window_info()
+
+        if not info:
+            print("Окно игры не найдено.")
+            return None
+        
+        left, top, width, height = info
+
+        img = ImageGrab.grab(bbox=(left, top, left + width,top + height))
+        pixels = img.load()
+
+        for y in range(0, height):
+            red_pixels = 0
+            for x in range(0, width):
+                pixel = pixels[x, y]
+                if pixel is None:
+                    continue
+                r, g, b = pixel
+                if r > 135 and g < 80 and b < 80: 
+                    red_pixels += 1
+                if red_pixels >= 10:
+                    y_line = y
+                    x_start = None
+                    x_end = None    
+                    for x2 in range(0, width):
+                        r2, g2, b2 = pixels[x2, y_line]
+                        if r2 > 135 and g2 < 80 and b2 < 80:
+                            if x_start is None:
+                                x_start = x2
+                            x_end = x2
+                    if x_start is not None and x_end is not None:
+                        return (x_start + left, x_end + left, y_line + top)
+                    else:
+                        continue
+        return None
+    except Exception as e:
+        print(f"Неизвестная ошибка: {e}")
+        return None
+    
 
 # Считывание текущего процента HP
 def get_current_hp():
-    """
-Считывает текущий процент HP по координатам hp_coords.
-Подсчитывает красные пиксели на полоске и возвращает процент от максимума.
-"""
+    """Считывает текущий процент HP по координатам hp_coords.
+Подсчитывает красные пиксели на полоске и возвращает процент от максимума."""
     try:
         X_START, X_END, Y_LINE = hp_coords
         TOTAL_WIDTH = X_END - X_START + 1
         red_pixels = 0
-        for x in range(X_START, X_END + 1):
-            try:
-                r, g, b = pyautogui.pixel(x, Y_LINE)
-                if r > 90: red_pixels += 1
-            except Exception:
-                break
+        img = ImageGrab.grab(bbox=(X_START, Y_LINE, X_END, Y_LINE + 1)).convert("RGB")
+        pixels = img.load()
+        for x in range(TOTAL_WIDTH):
+                r, g, b = pixels[x, 0]
+                if r >= 10:
+                    red_pixels += 1
         return int((red_pixels / TOTAL_WIDTH) * 100)
     except Exception as e:
         print(f"Ошибка считывания HP: {e}")
@@ -182,11 +190,9 @@ def get_area_chat():
         return None
     
 # Захват и распознавание чата (OCR)
-def capture_chat():
-    """
-Делает скриншот области чата и распознаёт текст через Tesseract OCR.
-Возвращает строку с распознанным текстом или None при ошибке.
-"""
+'''def capture_chat():
+    """ Делает скриншот области чата и распознаёт текст через Tesseract OCR.
+Возвращает строку с распознанным текстом или None при ошибке."""
     try:
         X_START, Y_START, X_END, Y_END = get_area_chat()
         img = ImageGrab.grab(bbox=(X_START, Y_START, X_END, Y_END))
@@ -194,7 +200,7 @@ def capture_chat():
         return text.strip()
     except Exception as e:
         print(f"Неизвестная ошибка: {e}")
-        return None
+        return None'''
     
 # Фильтрация чата по ключевым словам
 def filter_chat(text):
@@ -215,7 +221,7 @@ def filter_chat(text):
     a = list(a)    
     return a
 
-# Генерация ИИ-отчёта (Сидорович)
+# Генерация ИИ-отчёта 
 def generate_ai_report():
     """
 Генерирует тактический отчёт за текущий день через Groq API (Llama 3.1).
@@ -277,7 +283,7 @@ con.close()
 print("КПК Сталкера запущен...")
 print("Ищу полоску HP...")
 hp_coords = find_hp_bar()  
-if not hp_coords:
+if hp_coords is None:
     print("Полоска HP не найдена! Запусти игру и перезапусти скрипт.")
 else:
     print(f"HP найден: {hp_coords}")
@@ -306,27 +312,44 @@ def monitor_hp():
 
 # Функция мониторинга чата
 def monitor_chat():
-    """
-    Поток-Производитель (Producer) для распознавания игрового чата:
+    """Поток-Производитель (Producer) для распознавания игрового чата:
     - Работает в бесконечном цикле в отдельном потоке.
     - С помощью PIL.ImageGrab делает скриншот зоны чата.
     - Передает картинку в Tesseract OCR для извлечения текста.
     - Проверяет текст на наличие ключевых слов (KEYWORDS) с помощью нечеткого сравнения (fuzzywuzzy).
     - Если найдено важное событие (например, "Ранил" или "Убит"), формирует кортеж 
-      и без задержек «бросает» его в общую очередь.
-    """
+      и без задержек «бросает» его в общую очередь."""
     print("Поток Чата Запущен.")
     last_chat_text = ""
+    last_img_bytes = None
     while True:
-        raw_text = capture_chat()
+        area_chat = get_area_chat()
+        if area_chat is None:
+            time.sleep(1)
+            continue
+        img = ImageGrab.grab(bbox=area_chat)
+        current_img_bytes = img.tobytes()
+        if current_img_bytes == last_img_bytes: 
+            time.sleep(0.5)
+            continue
+      
+        last_img_bytes = current_img_bytes
+
+        raw_text = pts.image_to_string(img, lang='rus', config='--psm 6').strip()
         if raw_text:
             filtered_lines = filter_chat(raw_text)
             if filtered_lines:
                 chat_text = '\n'.join(filtered_lines)
                 if chat_text != last_chat_text:
-                    q.put(("chat_event", "Событие чата", get_current_hp() or 100, chat_text))
+                    current_hp = get_current_hp()
+                    if current_hp is None: 
+                        current_hp = 100
+                        
+                    q.put(("chat_event", "Событие чата", current_hp, chat_text))
                     last_chat_text = chat_text
-        time.sleep(1.0)
+                    
+        time.sleep(0.5)
+        
 
 # Поток записи в базу данных
 def db_worker():
@@ -340,6 +363,8 @@ def db_worker():
       INSERT INTO game_logs... и сохраняет изменения (commit).
     - После этого вызывает q.task_done() и ждет следующее событие.
     """
+    con = sq.connect("stayout.db")
+    cursor = con.cursor()
     print("Поток БД Запущен и ждет задач...")
     while True:
         item = q.get()
@@ -348,8 +373,6 @@ def db_worker():
         
         event_source, event_type, hp_value, damage_source = item
         
-        con = sq.connect("stayout.db")
-        cursor = con.cursor()
         cursor.execute(
             "INSERT INTO game_logs(timestamp, event_type, hp_value, location, damage_source) VALUES(?, ?, ?, ?, ?)",
             (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), event_type, hp_value, None, damage_source)
