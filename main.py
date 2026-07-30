@@ -1,18 +1,20 @@
-import pyautogui
-import pygetwindow as gw
-import time
-import sqlite3 as sq
-from datetime import datetime
-from groq import Groq
-import pytesseract as pts
-from PIL import ImageGrab
-import platform
-from fuzzywuzzy import fuzz
-import tkinter as tk
-import threading
-import queue
 import os
+import platform
+import queue
+import sqlite3 as sq
+import threading
+import time
+import tkinter as tk
+from datetime import datetime, timezone
+
+import cv2
+import numpy as np
+import pygetwindow as gw
+import pytesseract as pts
 from dotenv import load_dotenv
+from fuzzywuzzy import fuzz
+from groq import Groq
+from PIL import ImageGrab
 
 if platform.system() == "Windows":
     pts.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
@@ -29,19 +31,12 @@ client = Groq(api_key=api_key)
 
 q = queue.Queue()
 HP_CHANGE_THRESHOLD = 5
-KEYWORDS = ["Уро", "Ранил", "Убил", "Погиб", "Аномал"]
-FAKE_CHAT = [
-    "Игрок VasyaPuper нанёс вам Урон 25",
-    "Аномалия нанесла Урон 15",
-    "Игрок Killer88 Убил вас",
-    "Вы Погибли от радиации",
-    "Мутант Ранил вас на 30",
-    "Игрок StalkerPro нанёс Урон 45",
-    "Аномал притяжения нанесла урон 20",
-    "Игрок DarkZone Убил вас выстрелом в голову",
-    "Вы Погибли в зоне отчуждения",
-    "Снайпер Ранил вас на 60",
+KEYWORDS = [
+    "Урон", "Ранил", "Убил", "Погиб", "Аномалия", 
+    "Радиация", "Кровотечение", "Отравление", "Перелом", # Статусные эффекты
+    "Уничтожил", "Опыт"                                  # Успешные действия
 ]
+
 # Получение информации об окне игры
 def get_window_info(x_start=None, x_end=None, y_length=None, y_end=None):
     """
@@ -71,7 +66,7 @@ def get_window_info(x_start=None, x_end=None, y_length=None, y_end=None):
     except IndexError:
         print("Ошибка: окно не найдено")
         return None
-    except Exception as e:
+    except (OSError, ValueError) as e:
         print(f"Неизвестная ошибка: {e}")
         return None
 
@@ -121,9 +116,9 @@ def find_hp_bar():
         img = ImageGrab.grab(bbox=(left, top, left + width,top + height))
         pixels = img.load()
 
-        for y in range(0, height):
+        for y in range(height):
             red_pixels = 0
-            for x in range(0, width):
+            for x in range(width):
                 pixel = pixels[x, y]
                 if pixel is None:
                     continue
@@ -134,7 +129,7 @@ def find_hp_bar():
                     y_line = y
                     x_start = None
                     x_end = None    
-                    for x2 in range(0, width):
+                    for x2 in range(width):
                         r2, g2, b2 = pixels[x2, y_line]
                         if r2 > 135 and g2 < 80 and b2 < 80:
                             if x_start is None:
@@ -145,27 +140,26 @@ def find_hp_bar():
                     else:
                         continue
         return None
-    except Exception as e:
+    except (OSError, ValueError) as e:
         print(f"Неизвестная ошибка: {e}")
         return None
     
-
 # Считывание текущего процента HP
 def get_current_hp():
     """Считывает текущий процент HP по координатам hp_coords.
 Подсчитывает красные пиксели на полоске и возвращает процент от максимума."""
     try:
         X_START, X_END, Y_LINE = hp_coords
-        TOTAL_WIDTH = X_END - X_START + 1
         red_pixels = 0
         img = ImageGrab.grab(bbox=(X_START, Y_LINE, X_END, Y_LINE + 1)).convert("RGB")
         pixels = img.load()
+        TOTAL_WIDTH = img.width
         for x in range(TOTAL_WIDTH):
-                r, g, b = pixels[x, 0]
+                r, _g, _b = pixels[x, 0]
                 if r >= 10:
                     red_pixels += 1
         return int((red_pixels / TOTAL_WIDTH) * 100)
-    except Exception as e:
+    except (OSError, ValueError) as e:
         print(f"Ошибка считывания HP: {e}")
         return None
 
@@ -185,23 +179,10 @@ def get_area_chat():
             int(top + height * 0.333),
             int(left + width * 0.187),
             int(top + height * 0.953))
-    except Exception as e:
+    except (RuntimeError, OSError, TypeError, ValueError) as e:
         print(f"Неизвестная ошибка: {e}")
         return None
-    
-# Захват и распознавание чата (OCR)
-'''def capture_chat():
-    """ Делает скриншот области чата и распознаёт текст через Tesseract OCR.
-Возвращает строку с распознанным текстом или None при ошибке."""
-    try:
-        X_START, Y_START, X_END, Y_END = get_area_chat()
-        img = ImageGrab.grab(bbox=(X_START, Y_START, X_END, Y_END))
-        text = pts.image_to_string(img, lang='rus', config='--psm 6')
-        return text.strip()
-    except Exception as e:
-        print(f"Неизвестная ошибка: {e}")
-        return None'''
-    
+     
 # Фильтрация чата по ключевым словам
 def filter_chat(text):
     """
@@ -215,7 +196,7 @@ def filter_chat(text):
     for word in KEYWORDS:
        for l in line:
         part_ratio = fuzz.partial_ratio(word,l)
-        if part_ratio >= 60 and len(word) <= 5 or part_ratio >= 85 and len(word) > 5:
+        if (part_ratio >= 80 and len(word) <= 5) or (part_ratio >= 75 and len(word) > 5):
             a.append(l)
     a = dict.fromkeys(a)
     a = list(a)    
@@ -231,8 +212,8 @@ def generate_ai_report():
     con = sq.connect("stayout.db")
     cursor = con.cursor()
     
-    # Берем сегодняшнюю дату
-    today = datetime.now().strftime("%Y-%m-%d")
+    # Берем сегодняшнюю дату (в UTC)
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     query = "SELECT event_type, hp_value FROM game_logs WHERE timestamp LIKE ? ORDER BY rowid DESC"
     cursor.execute(query, (f"{today}%",))
@@ -291,20 +272,17 @@ else:
 # Функция мониторинга здоровья
 prev_hp = 100
 def monitor_hp():
-    """
-    Поток-Производитель для отслеживания полоски ХП:
+    """ Поток-Производитель для отслеживания полоски ХП:
     - Работает в бесконечном цикле в отдельном потоке.
     - Делает скриншот заданной области экрана (полоски здоровья) с помощью PyAutoGUI.
     - Сравнивает текущий цвет пикселей с шаблоном «здорового» цвета.
     - Если здоровье изменилось сильнее, чем HP_CHANGE_THRESHOLD, формирует 
-      кортеж данных и отправляет его в очередь.
-    """
+      кортеж данных и отправляет его в очередь."""
     global prev_hp
     print("Поток HP запущен.")
     while True:
         current_percent = get_current_hp()
-        if current_percent is not None:
-            if abs(current_percent - prev_hp) >= HP_CHANGE_THRESHOLD:
+        if current_percent is not None and abs(current_percent - prev_hp) >= HP_CHANGE_THRESHOLD :
                 event_type = "Ранение" if current_percent < prev_hp else "Лечение"
                 q.put(("hp_event", event_type, current_percent, None))
                 prev_hp = current_percent
@@ -312,7 +290,8 @@ def monitor_hp():
 
 # Функция мониторинга чата
 def monitor_chat():
-    """Поток-Производитель (Producer) для распознавания игрового чата:
+    """ Поток-Производитель 
+    для распознавания игрового чата:
     - Работает в бесконечном цикле в отдельном потоке.
     - С помощью PIL.ImageGrab делает скриншот зоны чата.
     - Передает картинку в Tesseract OCR для извлечения текста.
@@ -334,13 +313,27 @@ def monitor_chat():
             continue
       
         last_img_bytes = current_img_bytes
+        
 
-        raw_text = pts.image_to_string(img, lang='rus', config='--psm 6').strip()
+        # Переводим картинку PIL в массив numpy 
+        img_cv = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
+        # Переводим в оттенки серого
+        gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
+        # Увеличиваем размер (Tesseract лучше читает крупный текст)
+        gray = cv2.resize(gray, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
+        # Применяем бинаризацию (оставляем только яркий текст, фон делаем черным)
+        # Порог (200) подбирается под цвет текста чата. Если текст белый - это сработает отлично.
+        _, thresh = cv2.threshold(gray, 200, 255, cv2.THRESH_BINARY)
+        # Инвертируем (Tesseract лучше читает черный текст на белом фоне)
+        inverted = cv2.bitwise_not(thresh)
+        
+        raw_text = pts.image_to_string(inverted, lang='rus', config='--psm 6').strip()
+        
         if raw_text:
             filtered_lines = filter_chat(raw_text)
             if filtered_lines:
                 chat_text = '\n'.join(filtered_lines)
-                if chat_text != last_chat_text:
+                if chat_text != last_chat_text and len(chat_text) > 3:
                     current_hp = get_current_hp()
                     if current_hp is None: 
                         current_hp = 100
@@ -353,16 +346,14 @@ def monitor_chat():
 
 # Поток записи в базу данных
 def db_worker():
-    """
-    Поток-Потребитель (Consumer) для работы со SQLite:
+    """Поток-Потребитель (Consumer) для работы со SQLite:
     - Единственный поток, который имеет прямой доступ к файлу базы данных.
     - Запускается в бесконечном цикле и ждет данные через блокирующий вызов q.get().
     - Если очередь пуста, поток автоматически засыпает (не нагружая процессор).
     - Как только в очередь падает событие от monitor_hp или monitor_chat, он просыпается,
       распаковывает кортеж, открывает соединение с SQLite, выполняет SQL-запрос 
       INSERT INTO game_logs... и сохраняет изменения (commit).
-    - После этого вызывает q.task_done() и ждет следующее событие.
-    """
+    - После этого вызывает q.task_done() и ждет следующее событие."""
     con = sq.connect("stayout.db")
     cursor = con.cursor()
     print("Поток БД Запущен и ждет задач...")
@@ -371,15 +362,13 @@ def db_worker():
         if item is None: 
             break
         
-        event_source, event_type, hp_value, damage_source = item
+        _event_source, event_type, hp_value, damage_source = item
         
         cursor.execute(
             "INSERT INTO game_logs(timestamp, event_type, hp_value, location, damage_source) VALUES(?, ?, ?, ?, ?)",
-            (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), event_type, hp_value, None, damage_source)
+            (datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"), event_type, hp_value, None, damage_source)
         )
         con.commit()
-        con.close()
-        
         q.task_done()
 
 thr_hp = threading.Thread(target=monitor_hp,daemon=True)   
