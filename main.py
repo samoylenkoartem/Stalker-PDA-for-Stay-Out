@@ -33,23 +33,23 @@ q = queue.Queue()
 HP_CHANGE_THRESHOLD = 5
 KEYWORDS = [
     "Урон", "Ранил", "Убил", "Погиб", "Аномалия", 
-    "Радиация", "Кровотечение", "Отравление", "Перелом", # Статусные эффекты
-    "Уничтожил", "Опыт"                                  # Успешные действия
+    "Радиация", "Кровотечение", "Отравление", "Перелом", 
+    "Уничтожил", "Опыт"                                  
 ]
 
 # Получение информации об окне игры
 def get_window_info(x_start=None, x_end=None, y_length=None, y_end=None):
-    """
-Возвращает координаты и размеры окна игры Stay Out через pygetwindow.
+    """ Возвращает координаты и размеры окна игры Stay Out через pygetwindow.
 - Если аргументы не переданы — возвращает (left, top, width, height) окна.
 - Если переданы смещения — возвращает абсолютные координаты на экране.
 """
     try:
-        window = [w for w in gw.getAllWindows() if 'SO official' in w.title]
+        #TODO: добавить ручной выбор окна игры
+        windows = [w for w in gw.getAllWindows() if 'SO official' in w.title]
         if not window:
             print("Запусти игру")
             return None
-        windows = window[0]
+        window = windows[0]
         if windows.isMinimized:
             time.sleep(1)
             return None
@@ -78,7 +78,6 @@ def start_tracker():
     3. Закрывает окно Tkinter (root.destroy()), чтобы свернуть интерфейс 
        и освободить ресурсы для работы основных потоков.
     """
-    
     global KEYWORDS
     text = text_field.get("1.0",tk.END).strip()
     KEYWORDS = text.split(',')
@@ -87,11 +86,9 @@ def start_tracker():
 
 # Адаптивная частота опроса (Black Box)
 def get_polling_rate(hp):
-    """
-Возвращает задержку между опросами экрана (Black Box режим):
+    """ Возвращает задержку между опросами экрана (Black Box режим):
 - HP > 30% — стандартный режим (0.5 сек)
-- HP <= 30% — критический режим (0.2 сек, 5 раз в секунду)
-"""
+- HP <= 30% — критический режим (0.2 сек, 5 раз в секунду)"""
     if hp > 30:
         return 0.5 
     else:
@@ -99,7 +96,7 @@ def get_polling_rate(hp):
 
 # Автопоиск полоски HP на экране
 def find_hp_bar():
-# TODO: Позже переписать алгоритм на один проход (Streak Counter) и добавить convert("RGB")
+#TODO: Позже переписать алгоритм на один проход (Streak Counter) и добавить convert("RGB")
     """Автоматически находит полоску HP на экране путём сканирования пикселей.
 Ищет строку с более чем 10 красными пикселями подряд (r>135, g<80, b<80).
 Возвращает кортеж (x_start, x_end, y_line) — координаты полоски."""
@@ -113,7 +110,7 @@ def find_hp_bar():
         
         left, top, width, height = info
 
-        img = ImageGrab.grab(bbox=(left, top, left + width,top + height))
+        img = ImageGrab.grab(bbox=(left, top, left + width,top + height)).convert('RGB')
         pixels = img.load()
 
         for y in range(height):
@@ -155,8 +152,8 @@ def get_current_hp():
         pixels = img.load()
         TOTAL_WIDTH = img.width
         for x in range(TOTAL_WIDTH):
-                r, _g, _b = pixels[x, 0]
-                if r >= 10:
+                r, g, b = pixels[x, 0]
+                if r >= 120 and g < 100 and b < 100:
                     red_pixels += 1
         return int((red_pixels / TOTAL_WIDTH) * 100)
     except (OSError, ValueError) as e:
@@ -165,16 +162,16 @@ def get_current_hp():
 
 # Определение области чата
 def get_area_chat():
-    """
-Возвращает координаты области чата в абсолютных пикселях экрана.
-Вычисляет зону относительно размеров окна игры (в процентах).
-"""
+    
+    """ Возвращает координаты области чата в абсолютных пикселях экрана.
+Вычисляет зону относительно размеров окна игры (в процентах)."""
     try:
         info = get_window_info()
         if not info:
             return None
         left, top, width, height = info
         return (
+            #TODO: уйти от относительных координат 
             int(left + width * 0.036),
             int(top + height * 0.333),
             int(left + width * 0.187),
@@ -185,22 +182,20 @@ def get_area_chat():
      
 # Фильтрация чата по ключевым словам
 def filter_chat(text):
-    """
-Фильтрует строки чата по ключевым словам через нечёткое сравнение fuzzywuzzy.
+    """ Фильтрует строки чата по ключевым словам через нечёткое сравнение (fuzzywuzzy).
 Пороги: 60% для коротких слов (<=5 символов), 85% для длинных.
 Дедуплицирует результат через dict.fromkeys().
-Возвращает список уникальных строк с совпадениями.
-"""
+Возвращает список уникальных строк с совпадениями."""
     line = text.split('\n')
-    a=[]
+    arr=[]
     for word in KEYWORDS:
        for l in line:
         part_ratio = fuzz.partial_ratio(word,l)
         if (part_ratio >= 80 and len(word) <= 5) or (part_ratio >= 75 and len(word) > 5):
             a.append(l)
-    a = dict.fromkeys(a)
-    a = list(a)    
-    return a
+    arr = dict.fromkeys(arr)
+    arr = list(arr)    
+    return arr
 
 # Генерация ИИ-отчёта 
 def generate_ai_report():
@@ -221,7 +216,8 @@ def generate_ai_report():
     logs = cursor.fetchall()
     con.close()
     
-    if not logs: return "Рейд был тихим."
+    if not logs: 
+        return "Во время сессии событий не было."
     
     log_text = "\n".join([f"- {row[0]}: {row[1]}% HP" for row in logs])
     
@@ -290,8 +286,7 @@ def monitor_hp():
 
 # Функция мониторинга чата
 def monitor_chat():
-    """ Поток-Производитель 
-    для распознавания игрового чата:
+    """ Поток-Производитель для распознавания игрового чата:
     - Работает в бесконечном цикле в отдельном потоке.
     - С помощью PIL.ImageGrab делает скриншот зоны чата.
     - Передает картинку в Tesseract OCR для извлечения текста.
@@ -346,7 +341,7 @@ def monitor_chat():
 
 # Поток записи в базу данных
 def db_worker():
-    """Поток-Потребитель (Consumer) для работы со SQLite:
+    """Поток-Потребитель для работы со SQLite:
     - Единственный поток, который имеет прямой доступ к файлу базы данных.
     - Запускается в бесконечном цикле и ждет данные через блокирующий вызов q.get().
     - Если очередь пуста, поток автоматически засыпает (не нагружая процессор).
@@ -360,6 +355,7 @@ def db_worker():
     while True:
         item = q.get()
         if item is None: 
+            con.close()
             break
         
         _event_source, event_type, hp_value, damage_source = item
