@@ -1,19 +1,20 @@
-import pyautogui
-import pygetwindow as gw
-import time
-import sqlite3 as sq
-from datetime import datetime
-from groq import Groq
-import pytesseract as pts
-from PIL import ImageGrab
-import platform
-import random
-from fuzzywuzzy import fuzz
-import tkinter as tk
-import threading
-import queue
 import os
+import platform
+import queue
+import random
+import sqlite3 as sq
+import threading
+import time
+import tkinter as tk
+from datetime import datetime
+
+#import pyautogui
+import pygetwindow as gw
+import pytesseract as pts
 from dotenv import load_dotenv
+from fuzzywuzzy import fuzz
+from groq import Groq
+from PIL import ImageGrab
 
 if platform.system() == "Windows":
     pts.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
@@ -31,18 +32,7 @@ client = Groq(api_key=api_key)
 q = queue.Queue()
 HP_CHANGE_THRESHOLD = 5
 KEYWORDS = ["Уро", "Ранил", "Убил", "Погиб", "Аномал"]
-FAKE_CHAT = [
-    "Игрок VasyaPuper нанёс вам Урон 25",
-    "Аномалия нанесла Урон 15",
-    "Игрок Killer88 Убил вас",
-    "Вы Погибли от радиации",
-    "Мутант Ранил вас на 30",
-    "Игрок StalkerPro нанёс Урон 45",
-    "Аномал притяжения нанесла урон 20",
-    "Игрок DarkZone Убил вас выстрелом в голову",
-    "Вы Погибли в зоне отчуждения",
-    "Снайпер Ранил вас на 60",
-]
+
 # Получение информации об окне игры
 def get_window_info(x_start=None, x_end=None, y_length=None, y_end=None):
     """
@@ -72,7 +62,7 @@ def get_window_info(x_start=None, x_end=None, y_length=None, y_end=None):
     except IndexError:
         print("Ошибка: окно не найдено")
         return None
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         print(f"Неизвестная ошибка: {e}")
         return None
 
@@ -98,7 +88,7 @@ def emulate_chat():
     Генерирует случайные текстовые строки из тестового набора FAKE_CHAT и имитирует задержки реального игрового чата, чтобы проверить, 
     как система обрабатывает и фильтрует входящий поток сообщений.
     """
-    lines = random.sample(FAKE_CHAT, k=random.randint(7, 10))
+    lines = random.sample(FAKE_CHAT, k=random.randint(7, 10))  # type: ignore # noqa: F821
     return '\n'.join(lines)
 
 # Адаптивная частота опроса (Black Box)
@@ -112,54 +102,6 @@ def get_polling_rate(hp):
         return 0.5 
     else:
         return 0.2
-
-# Автопоиск полоски HP на экране
-def find_hp_bar():
-    """
-Автоматически находит полоску HP на экране путём сканирования пикселей.
-Ищет строку с более чем 50 красными пикселями подряд (r>150, g<80, b<80).
-Возвращает кортеж (x_start, x_end, y_line) — координаты полоски.
-"""
-    red_pixels = 0
-    left, top, width, height = get_window_info()
-    for y in range(top, top+height+1):
-        red_pixels = 0
-        for x in range(left, left+width+1):
-            r, g, b = pyautogui.pixel(x,y)
-            if r > 150 and g < 80 and b < 80: red_pixels += 1
-            if red_pixels > 50:
-                y_line = y
-                x_start = None
-                x_end = None    
-                for x in range(left, left+width+1):
-                    r, g, b = pyautogui.pixel(x,y_line)
-                    if r > 150 and g < 80 and b < 80 and x_start is None:
-                        x_start = x
-                    if r > 150 and g < 80 and b < 80:
-                        x_end = x
-                return(x_start, x_end, y)
-    return None
-
-# Считывание текущего процента HP
-def get_current_hp():
-    """
-Считывает текущий процент HP по координатам hp_coords.
-Подсчитывает красные пиксели на полоске и возвращает процент от максимума.
-"""
-    try:
-        X_START, X_END, Y_LINE = hp_coords
-        TOTAL_WIDTH = X_END - X_START + 1
-        red_pixels = 0
-        for x in range(X_START, X_END + 1):
-            try:
-                r, g, b = pyautogui.pixel(x, Y_LINE)
-                if r > 90: red_pixels += 1
-            except Exception:
-                break
-        return int((red_pixels / TOTAL_WIDTH) * 100)
-    except Exception as e:
-        print(f"Ошибка считывания HP: {e}")
-        return None
 
 # Определение области чата
 def get_area_chat():
@@ -177,7 +119,7 @@ def get_area_chat():
             int(top + height * 0.333),
             int(left + width * 0.187),
             int(top + height * 0.953))
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         print(f"Неизвестная ошибка: {e}")
         return None
     
@@ -192,7 +134,7 @@ def capture_chat():
         img = ImageGrab.grab(bbox=(X_START, Y_START, X_END, Y_END))
         text = pts.image_to_string(img, lang='rus', config='--psm 6')
         return text.strip()
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         print(f"Неизвестная ошибка: {e}")
         return None
     
@@ -226,7 +168,7 @@ def generate_ai_report():
     cursor = con.cursor()
     
     # Берем сегодняшнюю дату
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
 
     query = "SELECT event_type, hp_value FROM game_logs WHERE timestamp LIKE ? ORDER BY rowid DESC"
     cursor.execute(query, (f"{today}%",))
@@ -269,8 +211,9 @@ button.pack()
 root.mainloop()
 
 class Database:
-    def __init__(self, file="stayout.db"):
+    def __init__(self, file="stayout.db", data_queue=None):
         self._file = file
+        self._q = data_queue if data_queue is not None else queue.Queue()
         con = sq.connect(self._file)
         con.execute("CREATE TABLE IF NOT EXISTS game_logs (timestamp TEXT, event_type TEXT, hp_value INTEGER, location TEXT, damage_source TEXT)")
         con.close()
@@ -279,65 +222,130 @@ class Database:
         cursor = con.cursor()
         cursor.execute(
             "INSERT INTO game_logs(timestamp, event_type, hp_value, location, damage_source) VALUES(?, ?, ?, ?, ?)",
-            (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), event_type, hp_value, location, damage_source)
+            (datetime.now(tz=datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S"), event_type, hp_value, location, damage_source)
         )
         con.commit()
         con.close()
 
     def db_worker(self):
         while True:
-            item = q.get()
-            if item is None: 
+            item = self._q.get()
+            if item is None:
                 break
-        
+
             event_type, hp_value, location, damage_source = item
             self.log_event(event_type, hp_value, location, damage_source)
-        
-            q.task_done()
+
+            self._q.task_done()
+
 class GameWindow:
     def __init__(self):
         self._left = None
         self._top = None
         self._width = None
         self._height = None
-    def update(self, x_start=None, x_end=None, y_length=None, y_end=None):
+    def update(self):
         try:
-            window = gw.getWindowsWithTitle("Stay Out")
-            if window:
-                windows = window[0]
-                if windows.isMinimized:
+            windows = gw.getWindowsWithTitle("Stay Out")
+            if windows:
+                window = windows[0]
+                if window.isMinimized:
                     time.sleep(1)
-                if x_start is None and x_end is None and y_length is None:
-                    self._left = windows.left
-                    self._top = windows.top
-                    self._width = windows.width
-                    self._height = windows.height
-                    return
-                X_START = windows.left + x_start
-                X_END = windows.left + x_end
-                Y_LENGTH = windows.top + y_length
-                if y_end is not None:
-                    Y_END = windows.top + y_end
-                    self._left = X_START
-                    self._top = X_END
-                    self._width = Y_LENGTH
-                    self._height = Y_END
-                else:
-                    self._left = X_START
-                    self._top = X_END
-                    self._width = Y_LENGTH
+                    return False
+                self._left = window.left
+                self._top = window.top
+                self._width = window.width
+                self._height = window.height
+                return True
         except IndexError:
             print("Окно не найдено!")
             return
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             print(f'Ошибка: {e}')
+    def get_bbox(self):
+        if self._left is None:
+            return
+        x1 = self._left
+        x2 = self._left + self._width
+        y1 = self._top
+        y2 = self._top + self._height
+        return (x1, y1, x2, y2)
+class GameScanner:
+    def __init__(self, window_obj = None, data_queue = None):
+        self._window = window_obj if window_obj is not None else GameWindow()
+        self._queue = data_queue if data_queue is not None else queue.Queue()
+        self._hp_coords = None
+        self._prev_hp = 100
+    def find_hp_bar(self):
+        """ Автоматически находит полоску HP на экране путём сканирования пикселей.
+        Ищет строку с более чем 50 красными пикселями подряд (r>150, g<80, b<80).
+        Возвращает кортеж (x_start, x_end, y_line) — координаты полоски."""
+        try:
+            red_pixels = 0
+            x1, y1, x2, y2 = self._window.get_bbox()
+
+            img = ImageGrab.grab(bbox=(x1, y1, x2, y2)).convert('RGB')
+            pixels = img.load()
+
+            width = x2 - x1
+            height = y2 - y1    
+            
+            for y in range(height):
+                red_pixels = 0
+                for x in range(width):
+                    pixel = pixels[x, y]
+                    if pixel is None:
+                        continue
+                    r, g, b = pixel
+                    if r > 135 and g < 80 and b < 80: 
+                        red_pixels += 1
+                    if red_pixels >= 30:
+                        y_line = y
+                        x_start = None
+                        x_end = None    
+                        for x2 in range(width):
+                            r2, g2, b2 = pixels[x2, y_line]
+                            if r2 > 135 and g2 < 80 and b2 < 80:
+                                if x_start is None:
+                                    x_start = x2
+                                x_end = x2
+                        if x_start is not None and x_end is not None:
+                            self._hp_coords = (x_start + x1, x_end + x1, y_line + y1)
+                            return self._hp_coords
+                        else:
+                            continue
+            return 
+        except (OSError, ValueError) as e:
+            print(f"Неизвестная ошибка: {e}")
+        return 
+    def get_current_hp(self):
+        """ Считывает текущий процент HP по координатам hp_coords.
+    Подсчитывает красные пиксели на полоске и возвращает процент от максимума."""
+        try:
+            if self._hp_coords is None:
+                return None
+            X_START, X_END, Y_LINE = self._hp_coords
+            
+            red_pixels = 0
+            img = ImageGrab.grab(bbox=(X_START, Y_LINE, X_END, Y_LINE + 1)).convert("RGB")
+            pixels = img.load()
+            
+            TOTAL_WIDTH = img.width
+            for x in range(TOTAL_WIDTH):
+                    r, g, b = pixels[x, 0]
+                    if r >= 120 and g < 100 and b < 100:
+                        red_pixels += 1
+            return int((red_pixels / TOTAL_WIDTH) * 100)
+        except (OSError, ValueError) as e:
+            print(f"Ошибка считывания HP: {e}")
+            return None
 
 db = Database()
 
 #Запуск скрипта
 print("КПК Сталкера запущен...")
 print("Ищу полоску HP...")
-hp_coords = find_hp_bar()  
+hp_coords = find_hp_bar()  # type: ignore # noqa: F821
 if not hp_coords:
     print("Полоска HP не найдена! Запусти игру и перезапусти скрипт.")
 else:
@@ -357,12 +365,11 @@ def monitor_hp():
     global prev_hp
     print("Поток HP запущен.")
     while True:
-        current_percent = get_current_hp()
-        if current_percent is not None:
-            if abs(current_percent - prev_hp) >= HP_CHANGE_THRESHOLD:
-                event_type = "Ранение" if current_percent < prev_hp else "Лечение"
-                q.put((event_type, current_percent, None,  None))
-                prev_hp = current_percent
+        current_percent = get_current_hp()  # type: ignore # noqa: F821
+        if current_percent is not None and abs(current_percent - prev_hp) >= HP_CHANGE_THRESHOLD:
+            event_type = "Ранение" if current_percent < prev_hp else "Лечение"
+            q.put((event_type, current_percent, None,  None))
+            prev_hp = current_percent
         time.sleep(get_polling_rate(current_percent or 100))
 
 # Функция мониторинга чата
@@ -385,7 +392,7 @@ def monitor_chat():
             if filtered_lines:
                 chat_text = '\n'.join(filtered_lines)
                 if chat_text != last_chat_text:
-                    q.put(("chat_event", get_current_hp() or 100,  None, chat_text))
+                    q.put(("chat_event", get_current_hp() or 100,  None, chat_text))  # type: ignore # noqa: F821
                     last_chat_text = chat_text
         time.sleep(1.0)
 
