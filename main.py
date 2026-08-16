@@ -6,9 +6,8 @@ import sqlite3 as sq
 import threading
 import time
 import tkinter as tk
-from datetime import datetime
+from datetime import datetime, timezone
 
-#import pyautogui
 import pygetwindow as gw
 import pytesseract as pts
 from dotenv import load_dotenv
@@ -29,8 +28,6 @@ if not api_key:
 # Инициализация ИИ
 client = Groq(api_key=api_key)
 
-q = queue.Queue()
-HP_CHANGE_THRESHOLD = 5
 KEYWORDS = ["Уро", "Ранил", "Убил", "Погиб", "Аномал"]
 
 # Получение информации об окне игры
@@ -91,84 +88,15 @@ def emulate_chat():
     lines = random.sample(FAKE_CHAT, k=random.randint(7, 10))  # type: ignore # noqa: F821
     return '\n'.join(lines)
 
-# Адаптивная частота опроса (Black Box)
-def get_polling_rate(hp):
-    """
-Возвращает задержку между опросами экрана (Black Box режим):
-- HP > 30% — стандартный режим (0.5 сек)
-- HP <= 30% — критический режим (0.2 сек, 5 раз в секунду)
-"""
-    if hp > 30:
-        return 0.5 
-    else:
-        return 0.2
-
-# Определение области чата
-def get_area_chat():
-    """
-Возвращает координаты области чата в абсолютных пикселях экрана.
-Вычисляет зону относительно размеров окна игры (в процентах).
-"""
-    try:
-        info = get_window_info()
-        if not info:
-            return None
-        left, top, width, height = info
-        return (
-            int(left + width * 0.036),
-            int(top + height * 0.333),
-            int(left + width * 0.187),
-            int(top + height * 0.953))
-    except Exception as e:  # noqa: BLE001
-        print(f"Неизвестная ошибка: {e}")
-        return None
-    
-# Захват и распознавание чата (OCR)
-def capture_chat():
-    """
-Делает скриншот области чата и распознаёт текст через Tesseract OCR.
-Возвращает строку с распознанным текстом или None при ошибке.
-"""
-    try:
-        X_START, Y_START, X_END, Y_END = get_area_chat()
-        img = ImageGrab.grab(bbox=(X_START, Y_START, X_END, Y_END))
-        text = pts.image_to_string(img, lang='rus', config='--psm 6')
-        return text.strip()
-    except Exception as e:  # noqa: BLE001
-        print(f"Неизвестная ошибка: {e}")
-        return None
-    
-# Фильтрация чата по ключевым словам
-def filter_chat(text):
-    """
-Фильтрует строки чата по ключевым словам через нечёткое сравнение fuzzywuzzy.
-Пороги: 60% для коротких слов (<=5 символов), 85% для длинных.
-Дедуплицирует результат через dict.fromkeys().
-Возвращает список уникальных строк с совпадениями.
-"""
-    line = text.split('\n')
-    a=[]
-    for word in KEYWORDS:
-       for l in line:
-        part_ratio = fuzz.partial_ratio(word,l)
-        if part_ratio >= 60 and len(word) <= 5 or part_ratio >= 85 and len(word) > 5:
-            a.append(l)
-    a = dict.fromkeys(a)
-    a = list(a)    
-    return a
-
 # Генерация ИИ-отчёта (Сидорович)
 def generate_ai_report():
-    """
-Генерирует тактический отчёт за текущий день через Groq API (Llama 3.1).
+    """ Генерирует тактический отчёт за текущий день через Groq API.
 Читает все события из game_logs за сегодня и передаёт в промпт.
-Вызывается один раз при завершении сессии (Ctrl+C).
-"""
+Вызывается один раз при завершении сессии. """
     con = sq.connect("stayout.db")
     cursor = con.cursor()
-    
-    # Берем сегодняшнюю дату
-    today = datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     query = "SELECT event_type, hp_value FROM game_logs WHERE timestamp LIKE ? ORDER BY rowid DESC"
     cursor.execute(query, (f"{today}%",))
@@ -244,8 +172,10 @@ class GameWindow:
         self._top = None
         self._width = None
         self._height = None
+        self.update()
     def update(self):
         try:
+            #TODO: исправить windows
             windows = gw.getWindowsWithTitle("Stay Out")
             if windows:
                 window = windows[0]
@@ -270,15 +200,17 @@ class GameWindow:
         y1 = self._top
         y2 = self._top + self._height
         return (x1, y1, x2, y2)
+
 class GameScanner:
     def __init__(self, window_obj = None, data_queue = None):
         self._window = window_obj if window_obj is not None else GameWindow()
         self._queue = data_queue if data_queue is not None else queue.Queue()
         self._hp_coords = None
         self._prev_hp = 100
+        self._hp_threshold = 5
     def find_hp_bar(self):
         """ Автоматически находит полоску HP на экране путём сканирования пикселей.
-        Ищет строку с более чем 50 красными пикселями подряд (r>150, g<80, b<80).
+        Ищет строку с более чем 50 красными пикселями подряд (r>135, g<80, b<80).
         Возвращает кортеж (x_start, x_end, y_line) — координаты полоски."""
         try:
             red_pixels = 0
@@ -299,6 +231,8 @@ class GameScanner:
                     r, g, b = pixel
                     if r > 135 and g < 80 and b < 80: 
                         red_pixels += 1
+                    else:
+                        red_pixels = 0
                     if red_pixels >= 30:
                         y_line = y
                         x_start = None
@@ -315,9 +249,26 @@ class GameScanner:
                         else:
                             continue
             return 
-        except (OSError, ValueError) as e:
-            print(f"Неизвестная ошибка: {e}")
+        except (OSError, ValueError, TypeError) as e:
+            print(f"Finding hp bar is failed: {e}")
         return 
+    def get_area_chat(self):
+        """ Возвращает координаты области чата в абсолютных пикселях экрана.
+    Вычисляет зону относительно размеров окна игры (в процентах)."""
+        try:
+            left, top, right, bottom = self._window.get_bbox()
+            width = right - left
+            height = bottom - top
+            
+        except (TypeError, ValueError):
+            return None
+
+        return (
+            int(left + width * 0.036),
+            int(top + height * 0.333),
+            int(left + width * 0.187),
+            int(top + height * 0.953)
+        )  
     def get_current_hp(self):
         """ Считывает текущий процент HP по координатам hp_coords.
     Подсчитывает красные пиксели на полоске и возвращает процент от максимума."""
@@ -339,65 +290,96 @@ class GameScanner:
         except (OSError, ValueError) as e:
             print(f"Ошибка считывания HP: {e}")
             return None
+    def get_polling_rate(self, hp):
+        """ Возвращает задержку между опросами экрана:
+    - HP > 30% — стандартный режим 
+    - HP <= 30% — критический режим """
+        if hp > 30:
+            return 0.5 
+        else:
+            return 0.2
+    def capture_chat(self):
+        """ Делает скриншот области чата и распознаёт текст через Tesseract OCR.
+    Возвращает строку с распознанным текстом или None при ошибке."""
+        try:
+            X_START, Y_START, X_END, Y_END = self.get_area_chat()
+            img = ImageGrab.grab(bbox=(X_START, Y_START, X_END, Y_END))
+            text = pts.image_to_string(img, lang='rus', config='--psm 6')
+            return text.strip()
+        except (OSError, ValueError, RuntimeError) as e:  
+            print(f"Capturing chat is failed: {e}")
+            return None
+    def filter_chat(self, text):
+        """ Фильтрует строки чата по ключевым словам через нечёткое сравнение.
+    Пороги: 60% для коротких слов (<=5 символов), 85% для длинных.
+    Дедуплицирует результат через dict.fromkeys().
+    Возвращает список уникальных строк с совпадениями."""
+        line = text.split('\n')
+        a=[]
+        for word in KEYWORDS:
+            for l in line:
+                part_ratio = fuzz.partial_ratio(word,l)
+                if part_ratio >= 60 and len(word) <= 5 or part_ratio >= 85 and len(word) > 5:
+                    a.append(l)
+        a = dict.fromkeys(a)
+        a = list(a)    
+        return a
+    def monitor_hp(self):
+        """ Поток-Производитель для отслеживания полоски ХП:
+        - Работает в бесконечном цикле в отдельном потоке.
+        - Делает скриншот заданной области экрана (полоски здоровья) с помощью PyAutoGUI.
+        - Сравнивает текущий цвет пикселей с шаблоном «здорового» цвета.
+        - Если здоровье изменилось сильнее, чем HP_CHANGE_THRESHOLD, формирует 
+        кортеж данных и отправляет его в очередь."""
+        print("Поток HP запущен.")
+        while True:
+            try:
+                current_percent = self.get_current_hp()
+                if current_percent is not None and abs(current_percent - self._prev_hp) >= self._hp_threshold:
+                    event_type = "Ранение" if current_percent < self._prev_hp else "Лечение"
+                    self._queue.put((event_type, current_percent, None,  None))
+                    self._prev_hp = current_percent
+                time.sleep(self.get_polling_rate(current_percent or 100))
+            except (ValueError, OSError, RuntimeError) as e:
+                print(f"HP monitor error: {e}")
+    def monitor_chat(self):
+        """ Поток-Производитель для распознавания игрового чата:
+        - Работает в бесконечном цикле в отдельном потоке.
+        - С помощью PIL.ImageGrab делает скриншот зоны чата.
+        - Передает картинку в Tesseract OCR для извлечения текста.
+        - Проверяет текст на наличие ключевых слов с помощью нечеткого сравнения.
+        - Если найдено важное событие, формирует кортеж 
+        и без задержек «бросает» его в общую очередь."""
+        print("Поток Чата Запущен.")
+        last_chat_text = ""
+        while True:
+            raw_text = self.capture_chat()
+            if raw_text:
+                filtered_lines = self.filter_chat(raw_text)
+                if filtered_lines:
+                    chat_text = '\n'.join(filtered_lines)
+                    if chat_text != last_chat_text:
+                        self._queue.put(("chat_event", self.get_current_hp() or 100,  None, chat_text))  
+                        last_chat_text = chat_text
+            time.sleep(1.0)
 
-db = Database()
+q = queue.Queue()
+db = Database(data_queue= q)
+Gw = GameWindow()
+gs = GameScanner(window_obj = Gw, data_queue = q)
 
 #Запуск скрипта
 print("КПК Сталкера запущен...")
 print("Ищу полоску HP...")
-hp_coords = find_hp_bar()  # type: ignore # noqa: F821
+hp_coords = gs.find_hp_bar()  
 if not hp_coords:
     print("Полоска HP не найдена! Запусти игру и перезапусти скрипт.")
 else:
     print(f"HP найден: {hp_coords}")
     
-# Функция мониторинга здоровья
-prev_hp = 100
-def monitor_hp():
-    """
-    Поток-Производитель для отслеживания полоски ХП:
-    - Работает в бесконечном цикле в отдельном потоке.
-    - Делает скриншот заданной области экрана (полоски здоровья) с помощью PyAutoGUI.
-    - Сравнивает текущий цвет пикселей с шаблоном «здорового» цвета.
-    - Если здоровье изменилось сильнее, чем HP_CHANGE_THRESHOLD, формирует 
-      кортеж данных и отправляет его в очередь.
-    """
-    global prev_hp
-    print("Поток HP запущен.")
-    while True:
-        current_percent = get_current_hp()  # type: ignore # noqa: F821
-        if current_percent is not None and abs(current_percent - prev_hp) >= HP_CHANGE_THRESHOLD:
-            event_type = "Ранение" if current_percent < prev_hp else "Лечение"
-            q.put((event_type, current_percent, None,  None))
-            prev_hp = current_percent
-        time.sleep(get_polling_rate(current_percent or 100))
 
-# Функция мониторинга чата
-def monitor_chat():
-    """
-    Поток-Производитель (Producer) для распознавания игрового чата:
-    - Работает в бесконечном цикле в отдельном потоке.
-    - С помощью PIL.ImageGrab делает скриншот зоны чата.
-    - Передает картинку в Tesseract OCR для извлечения текста.
-    - Проверяет текст на наличие ключевых слов (KEYWORDS) с помощью нечеткого сравнения (fuzzywuzzy).
-    - Если найдено важное событие (например, "Ранил" или "Убит"), формирует кортеж 
-      и без задержек «бросает» его в общую очередь.
-    """
-    print("Поток Чата Запущен.")
-    last_chat_text = ""
-    while True:
-        raw_text = capture_chat()
-        if raw_text:
-            filtered_lines = filter_chat(raw_text)
-            if filtered_lines:
-                chat_text = '\n'.join(filtered_lines)
-                if chat_text != last_chat_text:
-                    q.put(("chat_event", get_current_hp() or 100,  None, chat_text))  # type: ignore # noqa: F821
-                    last_chat_text = chat_text
-        time.sleep(1.0)
-
-thr_hp = threading.Thread(target=monitor_hp,daemon=True)   
-thr_chat = threading.Thread(target=monitor_chat, daemon=True)
+thr_hp = threading.Thread(target=gs.monitor_hp,daemon=True)   
+thr_chat = threading.Thread(target=gs.monitor_chat, daemon=True)
 thr_db = threading.Thread(target=db.db_worker, daemon=True)
 
 thr_hp.start()
