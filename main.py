@@ -1,13 +1,15 @@
 import os
 import platform
 import queue
-import random
+import re
 import sqlite3 as sq
 import threading
 import time
 import tkinter as tk
 from datetime import datetime, timezone
 
+import cv2
+import numpy as np
 import pygetwindow as gw
 import pytesseract as pts
 from dotenv import load_dotenv
@@ -30,38 +32,6 @@ client = Groq(api_key=api_key)
 
 KEYWORDS = ["Уро", "Ранил", "Убил", "Погиб", "Аномал"]
 
-# Получение информации об окне игры
-def get_window_info(x_start=None, x_end=None, y_length=None, y_end=None):
-    """
-Возвращает координаты и размеры окна игры Stay Out через pygetwindow.
-- Если аргументы не переданы — возвращает (left, top, width, height) окна.
-- Если переданы смещения — возвращает абсолютные координаты на экране.
-"""
-    try:
-        window = gw.getWindowsWithTitle("Stay Out")
-        if not window:
-            print("Запусти игру")
-            return None
-        windows = window[0]
-        if windows.isMinimized:
-            time.sleep(1)
-            return None
-        if x_start is None and x_end is None and y_length is None:
-                return (windows.left, windows.top, windows.width, windows.height)
-        X_START = windows.left + x_start
-        X_END = windows.left + x_end
-        Y_LENGTH = windows.top + y_length
-        if y_end is not None:
-            Y_END = windows.top + y_end
-            return (X_START, X_END, Y_LENGTH, Y_END)
-        else:
-            return (X_START, X_END, Y_LENGTH)
-    except IndexError:
-        print("Ошибка: окно не найдено")
-        return None
-    except Exception as e:  # noqa: BLE001
-        print(f"Неизвестная ошибка: {e}")
-        return None
 
 # Функция настройки интерфейса
 def start_tracker():
@@ -78,15 +48,6 @@ def start_tracker():
     KEYWORDS = [elem.strip() for elem in KEYWORDS]
     root.destroy()
 
-# Функция симуляции чата
-def emulate_chat():
-    """ 
-    Поток-симулятор (используется для тестов без запущенной игры):
-    Генерирует случайные текстовые строки из тестового набора FAKE_CHAT и имитирует задержки реального игрового чата, чтобы проверить, 
-    как система обрабатывает и фильтрует входящий поток сообщений.
-    """
-    lines = random.sample(FAKE_CHAT, k=random.randint(7, 10))  # type: ignore # noqa: F821
-    return '\n'.join(lines)
 
 # Генерация ИИ-отчёта (Сидорович)
 def generate_ai_report():
@@ -138,32 +99,127 @@ button.pack()
 
 root.mainloop()
 
+def is_event_start(line):
+    pattern = r"(\d{2})[:\s](\d{2})[:\s](\d{2})"
+    return re.search(pattern, line) is not None #True, если первая строка с timestamp 
+    
+def get_event_line(text):
+    lines = text.splitlines()
+    current_event = []
+    events = []
+
+    for line in lines:
+        if not is_event_start(line): # если не первая строка
+            if not current_event:
+                continue
+            current_event.append(line)    
+        else: # если первая строка
+            if current_event:
+                 events.append(current_event)   
+                 current_event = []
+            current_event.append(line)    
+            
+    if not current_event:
+        events.append(current_event)       
+    return events
+
+def parse_target(lines):
+    for line in lines:
+        pattern = r'(\d+)[.](\d)'
+        match = re.search(pattern=pattern, string=line)
+        
+        if match:
+            result = line[:match.start()].strip(" (")
+            return result
+        
+    return None
+
+def parse_event_type(text):
+    best_match = None
+    best_ratio = 0
+    
+    for word in KEYWORDS:
+        ratio = fuzz.partial_ratio(word, text)
+    
+        if ratio > best_ratio:
+            best_ratio = ratio
+            best_match = word
+         
+    if best_ratio >= 80:
+        return best_match
+    
+    return None
+
+def parse_time(text):
+    pattern = r"(\d{2})[:\s](\d{2})[:\s](\d{2})"
+    match = re.search(pattern=pattern, string=text)
+    
+    if match:
+        result = ":".join(match.groups())
+        return result
+    
+    return None
+
+def parse_damage(lines):
+    
+    for line in lines:
+        pattern = r'(\d+)[.](\d)'    
+        match = re.search(pattern=pattern, string=line)
+        
+        if match:
+            result = float(".".join(match.groups()))
+            return result
+        
+    return None
+
+def parse_event(event):
+    event_text = "\n".join(event)
+    
+    time = parse_time(text=event_text)
+    event_type = parse_event_type(text=event_text)
+    damage = parse_damage(lines=event[1:])
+    target = parse_target(event[1:])
+    
+    return {
+        "game_time": time,
+        "event_type": event_type,
+        "target": target,
+        "damage": damage,
+        "raw_text": event_text
+    }
+
 class Database:
     def __init__(self, file="stayout.db", data_queue=None):
         self._file = file
         self._q = data_queue if data_queue is not None else queue.Queue()
         con = sq.connect(self._file)
-        con.execute("CREATE TABLE IF NOT EXISTS game_logs (timestamp TEXT, event_type TEXT, hp_value INTEGER, location TEXT, damage_source TEXT)")
+        con.execute("CREATE TABLE IF NOT EXISTS game_logs (timestamp TEXT, event_type TEXT, hp_value INTEGER, location TEXT, damage_source TEXT, target TEXT, damage REAL, game_time TEXT, raw_text TEXT)")
         con.close()
-    def log_event(self, event_type, hp_value, location = None, damage_source = None):
+    def log_event(self, event):
         con = sq.connect(self._file)
         cursor = con.cursor()
         cursor.execute(
-            "INSERT INTO game_logs(timestamp, event_type, hp_value, location, damage_source) VALUES(?, ?, ?, ?, ?)",
-            (datetime.now(tz=datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S"), event_type, hp_value, location, damage_source)
+            "INSERT INTO game_logs(timestamp, event_type, hp_value, location, damage_source, target, damage, game_time, raw_text) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (datetime.now(tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S"), 
+             event["event_type"], 
+             event["hp_value"], 
+             event["location"], 
+             event["damage_source"],
+             event["target"],
+             event["damage"],
+             event["game_time"],
+             event["raw_text"])   
         )
         con.commit()
         con.close()
-
     def db_worker(self):
         while True:
-            item = self._q.get()
-            if item is None:
+            event = self._q.get()
+            
+            if event is None:
                 break
 
-            event_type, hp_value, location, damage_source = item
-            self.log_event(event_type, hp_value, location, damage_source)
-
+            self.log_event(event)
             self._q.task_done()
 
 class GameWindow:
@@ -175,8 +231,7 @@ class GameWindow:
         self.update()
     def update(self):
         try:
-            #TODO: исправить windows
-            windows = gw.getWindowsWithTitle("Stay Out")
+            windows = [w for w in gw.getAllWindows() if 'SO official' in w.title]
             if windows:
                 window = windows[0]
                 if window.isMinimized:
@@ -208,6 +263,7 @@ class GameScanner:
         self._hp_coords = None
         self._prev_hp = 100
         self._hp_threshold = 5
+        self._processed_events = set()
     def find_hp_bar(self):
         """ Автоматически находит полоску HP на экране путём сканирования пикселей.
         Ищет строку с более чем 50 красными пикселями подряд (r>135, g<80, b<80).
@@ -252,23 +308,6 @@ class GameScanner:
         except (OSError, ValueError, TypeError) as e:
             print(f"Finding hp bar is failed: {e}")
         return 
-    def get_area_chat(self):
-        """ Возвращает координаты области чата в абсолютных пикселях экрана.
-    Вычисляет зону относительно размеров окна игры (в процентах)."""
-        try:
-            left, top, right, bottom = self._window.get_bbox()
-            width = right - left
-            height = bottom - top
-            
-        except (TypeError, ValueError):
-            return None
-
-        return (
-            int(left + width * 0.036),
-            int(top + height * 0.333),
-            int(left + width * 0.187),
-            int(top + height * 0.953)
-        )  
     def get_current_hp(self):
         """ Считывает текущий процент HP по координатам hp_coords.
     Подсчитывает красные пиксели на полоске и возвращает процент от максимума."""
@@ -298,15 +337,80 @@ class GameScanner:
             return 0.5 
         else:
             return 0.2
+    def get_area_chat(self):
+            """ Возвращает координаты области чата в абсолютных пикселях экрана.
+        Вычисляет зону относительно размеров окна игры (в процентах)."""
+            try:
+                left, top, right, bottom = self._window.get_bbox()
+                width = right - left
+                height = bottom - top
+                
+            except (TypeError, ValueError):
+                return None
+    
+            return (
+                int(left + width * 0.03),
+                int(top + height * 0.50),
+                int(left + width * 0.21),
+                int(top + height * 0.82)
+            )
     def capture_chat(self):
-        """ Делает скриншот области чата и распознаёт текст через Tesseract OCR.
-    Возвращает строку с распознанным текстом или None при ошибке."""
+        """Захватывает область чата, обрабатывает изображение и распознаёт текст через Tesseract."""
         try:
-            X_START, Y_START, X_END, Y_END = self.get_area_chat()
-            img = ImageGrab.grab(bbox=(X_START, Y_START, X_END, Y_END))
-            text = pts.image_to_string(img, lang='rus', config='--psm 6')
+            area_chat = self.get_area_chat()
+
+            if area_chat is None:
+                return None
+
+            X_START, Y_START, X_END, Y_END = area_chat
+
+            # Скриншот области чата
+            img = ImageGrab.grab(
+                bbox=(X_START, Y_START, X_END, Y_END)
+            )
+
+            # PIL Image -> NumPy -> OpenCV BGR
+            img_cv = cv2.cvtColor(
+                np.array(img),
+                cv2.COLOR_RGB2BGR
+            )
+
+            # Перевод в оттенки серого
+            gray = cv2.cvtColor(
+                img_cv,
+                cv2.COLOR_BGR2GRAY
+            )
+
+            # Увеличение изображения в 2 раза
+            gray = cv2.resize(
+                gray,
+                None,
+                fx=2,
+                fy=2,
+                interpolation=cv2.INTER_CUBIC
+            )
+
+            # Бинаризация
+            _, thresh = cv2.threshold(
+                gray,
+                120,
+                255,
+                cv2.THRESH_BINARY
+            )
+
+            # Инверсия
+            inverted = cv2.bitwise_not(thresh)
+
+            # OCR
+            text = pts.image_to_string(
+                inverted,
+                lang="rus",
+                config="--psm 6"
+            )
+
             return text.strip()
-        except (OSError, ValueError, RuntimeError) as e:  
+
+        except (OSError, ValueError, RuntimeError, TypeError) as e:
             print(f"Capturing chat is failed: {e}")
             return None
     def filter_chat(self, text):
@@ -319,11 +423,25 @@ class GameScanner:
         for word in KEYWORDS:
             for l in line:
                 part_ratio = fuzz.partial_ratio(word,l)
-                if part_ratio >= 60 and len(word) <= 5 or part_ratio >= 85 and len(word) > 5:
+                if (part_ratio >= 80 and len(word) <= 5) or \
+                   (part_ratio >= 85 and len(word) > 5):
                     a.append(l)
         a = dict.fromkeys(a)
         a = list(a)    
         return a
+    def is_new_event(self, event):
+        if event["game_time"] is None:
+            return False
+        event_id = (
+            event["game_time"],
+            event["event_type"], 
+            event["target"]
+        )
+        if event_id in self._processed_events:
+            return False
+
+        self._processed_events.add(event_id)
+        return True
     def monitor_hp(self):
         """ Поток-Производитель для отслеживания полоски ХП:
         - Работает в бесконечном цикле в отдельном потоке.
@@ -331,13 +449,24 @@ class GameScanner:
         - Сравнивает текущий цвет пикселей с шаблоном «здорового» цвета.
         - Если здоровье изменилось сильнее, чем HP_CHANGE_THRESHOLD, формирует 
         кортеж данных и отправляет его в очередь."""
+        #TODO: Переделать комментарий
         print("Поток HP запущен.")
         while True:
             try:
                 current_percent = self.get_current_hp()
                 if current_percent is not None and abs(current_percent - self._prev_hp) >= self._hp_threshold:
                     event_type = "Ранение" if current_percent < self._prev_hp else "Лечение"
-                    self._queue.put((event_type, current_percent, None,  None))
+                    event = {
+                        "game_time": None,
+                        "event_type": event_type,
+                        "target": None,
+                        "damage": None,
+                        "hp_value": current_percent,
+                        "location": None,
+                        "damage_source": None,
+                        "raw_text": None
+                    }
+                    self._queue.put(event)
                     self._prev_hp = current_percent
                 time.sleep(self.get_polling_rate(current_percent or 100))
             except (ValueError, OSError, RuntimeError) as e:
@@ -350,17 +479,32 @@ class GameScanner:
         - Проверяет текст на наличие ключевых слов с помощью нечеткого сравнения.
         - Если найдено важное событие, формирует кортеж 
         и без задержек «бросает» его в общую очередь."""
+        
         print("Поток Чата Запущен.")
-        last_chat_text = ""
+        
         while True:
+
             raw_text = self.capture_chat()
             if raw_text:
-                filtered_lines = self.filter_chat(raw_text)
-                if filtered_lines:
-                    chat_text = '\n'.join(filtered_lines)
-                    if chat_text != last_chat_text:
-                        self._queue.put(("chat_event", self.get_current_hp() or 100,  None, chat_text))  
-                        last_chat_text = chat_text
+                print("----- OCR -----")
+                print(raw_text)
+                print("---------------")
+                
+                events = get_event_line(raw_text)
+                if events:
+                    for event in events:
+                        parsed_event = parse_event(event=event)
+                        
+                        if parsed_event["event_type"] is None:
+                            continue
+                        
+                        parsed_event["hp_value"] = self.get_current_hp() or 100
+                        parsed_event["location"] = None
+                        parsed_event["damage_source"] = None
+                        
+                        if self.is_new_event(parsed_event):
+                            self._queue.put(parsed_event)
+                            
             time.sleep(1.0)
 
 q = queue.Queue()
