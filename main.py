@@ -5,7 +5,6 @@ import re
 import sqlite3 as sq
 import threading
 import time
-import tkinter as tk
 from datetime import datetime, timezone
 
 import cv2
@@ -30,24 +29,35 @@ if not api_key:
 # Инициализация ИИ
 client = Groq(api_key=api_key)
 
-KEYWORDS = ["Уро", "Ранил", "Убил", "Погиб", "Аномал"]
-
-
-# Функция настройки интерфейса
-def start_tracker():
-    """ Обработчик нажатия кнопки запуска в Tkinter:
-    1. Считывает ключевые слова из текстового поля интерфейса.
-    2. Очищает их от лишних пробелов и разбивает через запятую в список GLOBAL KEYWORDS.
-    3. Закрывает окно Tkinter (root.destroy()), чтобы свернуть интерфейс 
-       и освободить ресурсы для работы основных потоков.
-    """
+#KEYWORDS = ["Уро", "Ранил", "Убил", "Погиб", "Аномал"]
+# # Функция настройки интерфейса
+# def start_tracker():
+#     """ Обработчик нажатия кнопки запуска в Tkinter:
+#     1. Считывает ключевые слова из текстового поля интерфейса.
+#     2. Очищает их от лишних пробелов и разбивает через запятую в список GLOBAL KEYWORDS.
+#     3. Закрывает окно Tkinter (root.destroy()), чтобы свернуть интерфейс 
+#        и освободить ресурсы для работы основных потоков.
+#     """
     
-    global KEYWORDS
-    text = text_field.get("1.0",tk.END).strip()
-    KEYWORDS = text.split(',')
-    KEYWORDS = [elem.strip() for elem in KEYWORDS]
-    root.destroy()
+#     global KEYWORDS
+#     text = text_field.get("1.0",tk.END).strip()
+#     KEYWORDS = text.split(',')
+#     KEYWORDS = [elem.strip() for elem in KEYWORDS]
+#     root.destroy()
 
+#Запуск приложения
+# a = ', '.join(KEYWORDS)
+# root = tk.Tk()
+# root.title("Настройки КПК Сталкера")
+
+# text_field = tk.Text(root, height=10, width=40)
+# text_field.insert("1.0", a)
+# text_field.pack()
+
+# button = tk.Button(root, text="Старт", command=start_tracker)
+# button.pack()
+
+# root.mainloop()
 
 # Генерация ИИ-отчёта (Сидорович)
 def generate_ai_report():
@@ -78,91 +88,77 @@ def generate_ai_report():
     2. Хроника: когда были самые опасные моменты (падения HP)?
     Стиль: Технический, циничный, краткий.
     """
-    
+    #TODO: Пофиксить Groq
     chat = client.chat.completions.create(
         messages=[{"role": "user", "content": prompt}],
         model="llama-3.1-8b-instant",
     )
     return chat.choices[0].message.content
 
-#Запуск приложения
-a = ', '.join(KEYWORDS)
-root = tk.Tk()
-root.title("Настройки КПК Сталкера")
-
-text_field = tk.Text(root, height=10, width=40)
-text_field.insert("1.0", a)
-text_field.pack()
-
-button = tk.Button(root, text="Старт", command=start_tracker)
-button.pack()
-
-root.mainloop()
-
-def is_event_start(line):
-    pattern = r"(\d{2})[:\s](\d{2})[:\s](\d{2})"
-    return re.search(pattern, line) is not None #True, если первая строка с timestamp 
+def parse_time(text) -> str | None:
     
-def get_event_line(text):
+    pattern = r" (\d{2})[:\s]?(\d{2})[:\s]?(\d{2})"
+    match = re.search(pattern, text) 
+    
+    if match:
+        return match.group(0)
+    
+    return None
+
+def get_event_line(text) -> list:
+    
     lines = text.splitlines()
     current_event = []
     events = []
 
     for line in lines:
-        if not is_event_start(line): # если не первая строка
+        
+        if parse_time(text=line) is not None:
+        
+            if current_event:
+                events.append(current_event)  
+                 
+            current_event = [line]   
+        
+        else:   
+            
             if not current_event:
                 continue
-            current_event.append(line)    
-        else: # если первая строка
-            if current_event:
-                 events.append(current_event)   
-                 current_event = []
-            current_event.append(line)    
+        
+            current_event.append(line)
             
-    if not current_event:
+    if current_event:
         events.append(current_event)       
+    
     return events
 
-def parse_target(lines):
-    for line in lines:
-        pattern = r'(\d+)[.](\d)'
+def parse_target(text) -> str | None:
+    
+    for line in text:
+        
+        pattern = r"(\d+)[.](\d)"
         match = re.search(pattern=pattern, string=line)
         
         if match:
+            
             result = line[:match.start()].strip(" (")
             return result
         
     return None
 
-def parse_event_type(text):
-    best_match = None
-    best_ratio = 0
+def parse_event_type(text) -> str | None:
     
-    for word in KEYWORDS:
-        ratio = fuzz.partial_ratio(word, text)
-    
-        if ratio > best_ratio:
-            best_ratio = ratio
-            best_match = word
-         
-    if best_ratio >= 80:
-        return best_match
-    
-    return None
-
-def parse_time(text):
-    pattern = r"(\d{2})[:\s](\d{2})[:\s](\d{2})"
+    pattern = r"[\[\{\(]?([\w\s\.]+)[\}\}\)]?"
     match = re.search(pattern=pattern, string=text)
     
     if match:
-        result = ":".join(match.groups())
-        return result
+        return match.group(1)
     
     return None
 
-def parse_damage(lines):
+def parse_damage(text) -> float | None:
     
-    for line in lines:
+    for line in text:
         pattern = r'(\d+)[.](\d)'    
         match = re.search(pattern=pattern, string=line)
         
@@ -172,20 +168,53 @@ def parse_damage(lines):
         
     return None
 
-def parse_event(event):
-    event_text = "\n".join(event)
+def parse_event(event) -> dict | None:
     
-    time = parse_time(text=event_text)
-    event_type = parse_event_type(text=event_text)
-    damage = parse_damage(lines=event[1:])
-    target = parse_target(event[1:])
+    text = "\n".join(event)
+    tokens = text.split()
+    
+    game_time = None
+    event_type = None
+    context = None
+    event_type_index = None    
+    
+    for i, token in enumerate(tokens):
+        
+        if game_time is None:
+            game_time = parse_time(token)
+        
+        if game_time:
+            
+            event_type = parse_event_type(token)
+            
+            if event_type is not None:
+                event_type_index = i
+            
+            else:
+                if i + 1 < len(tokens):
+                    event_type = parse_event_type(tokens[i+1])
+                    if event_type is not None:            
+                        event_type_index = i + 1
+                    
+        if event_type is None:
+            continue
+        
+        context = " ".join(tokens[event_type_index + 1:]) 
+        break
+    
+    if event_type is None:
+        return None
+        #TODO: допилить fuzzy -> второй OCR -> skip
+        
+    damage = parse_damage(text=context)
+    target = parse_target(text=context)
     
     return {
-        "game_time": time,
+        "game_time": game_time,
         "event_type": event_type,
         "target": target,
         "damage": damage,
-        "raw_text": event_text
+        "raw_text": text
     }
 
 class Database:
@@ -355,7 +384,7 @@ class GameScanner:
                 int(top + height * 0.82)
             )
     def capture_chat(self):
-        """Захватывает область чата, обрабатывает изображение и распознаёт текст через Tesseract."""
+        #Захватывает область чата, обрабатывает изображение и распознаёт текст через Tesseract.
         try:
             area_chat = self.get_area_chat()
 
@@ -376,34 +405,34 @@ class GameScanner:
             )
 
             # Перевод в оттенки серого
-            gray = cv2.cvtColor(
-                img_cv,
-                cv2.COLOR_BGR2GRAY
-            )
+            # gray = cv2.cvtColor(
+            #     img_cv,
+            #     cv2.COLOR_BGR2GRAY
+            # )
 
-            # Увеличение изображения в 2 раза
-            gray = cv2.resize(
-                gray,
-                None,
-                fx=2,
-                fy=2,
-                interpolation=cv2.INTER_CUBIC
-            )
+            # # Увеличение изображения в 2 раза
+            img_cv = cv2.resize(
+            img_cv,
+            None,
+            fx=2,
+            fy=2,
+            interpolation=cv2.INTER_CUBIC
+        )
 
-            # Бинаризация
-            _, thresh = cv2.threshold(
-                gray,
-                120,
-                255,
-                cv2.THRESH_BINARY
-            )
+            # # Бинаризация
+            # _, thresh = cv2.threshold(
+            #     gray,
+            #     80,
+            #     255,
+            #     cv2.THRESH_BINARY
+            # )
 
-            # Инверсия
-            inverted = cv2.bitwise_not(thresh)
+            # # Инверсия
+            # inverted = cv2.bitwise_not(thresh)
 
             # OCR
             text = pts.image_to_string(
-                inverted,
+                img_cv,
                 lang="rus",
                 config="--psm 6"
             )
@@ -413,22 +442,6 @@ class GameScanner:
         except (OSError, ValueError, RuntimeError, TypeError) as e:
             print(f"Capturing chat is failed: {e}")
             return None
-    def filter_chat(self, text):
-        """ Фильтрует строки чата по ключевым словам через нечёткое сравнение.
-    Пороги: 60% для коротких слов (<=5 символов), 85% для длинных.
-    Дедуплицирует результат через dict.fromkeys().
-    Возвращает список уникальных строк с совпадениями."""
-        line = text.split('\n')
-        a=[]
-        for word in KEYWORDS:
-            for l in line:
-                part_ratio = fuzz.partial_ratio(word,l)
-                if (part_ratio >= 80 and len(word) <= 5) or \
-                   (part_ratio >= 85 and len(word) > 5):
-                    a.append(l)
-        a = dict.fromkeys(a)
-        a = list(a)    
-        return a
     def is_new_event(self, event):
         if event["game_time"] is None:
             return False
@@ -495,7 +508,7 @@ class GameScanner:
                     for event in events:
                         parsed_event = parse_event(event=event)
                         
-                        if parsed_event["event_type"] is None:
+                        if parsed_event is None:
                             continue
                         
                         parsed_event["hp_value"] = self.get_current_hp() or 100
@@ -508,7 +521,7 @@ class GameScanner:
             time.sleep(1.0)
 
 q = queue.Queue()
-db = Database(data_queue= q)
+db = Database(data_queue = q)
 Gw = GameWindow()
 gs = GameScanner(window_obj = Gw, data_queue = q)
 
@@ -522,7 +535,7 @@ else:
     print(f"HP найден: {hp_coords}")
     
 
-thr_hp = threading.Thread(target=gs.monitor_hp,daemon=True)   
+thr_hp = threading.Thread(target=gs.monitor_hp, daemon=True)   
 thr_chat = threading.Thread(target=gs.monitor_chat, daemon=True)
 thr_db = threading.Thread(target=db.db_worker, daemon=True)
 
